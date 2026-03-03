@@ -10,7 +10,20 @@ const SECRET = 'dev_secret_change_this';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
+
+// Error handler specifically for JSON parsing
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('Bad JSON received:', req.rawBody); // Log the raw body
+    return res.status(400).send({ error: 'Invalid JSON syntax' });
+  }
+  next();
+});
 
 // Register
 app.post('/api/register', async (req, res) => {
@@ -51,6 +64,19 @@ app.get('/api/users', (req, res) => {
   });
 });
 
+// Update user (name only)
+app.put('/api/users/:id', (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+
+  db.run('UPDATE users SET name = ? WHERE id = ?', [name, id], function(err) {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    if (this.changes === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ id, name });
+  });
+});
+
 // Get messages between current user and other
 app.get('/api/messages/:userA/:userB', (req, res) => {
   const { userA, userB } = req.params;
@@ -59,7 +85,12 @@ app.get('/api/messages/:userA/:userB', (req, res) => {
     [userA, userB, userB, userA],
     (err, rows) => {
       if (err) return res.status(500).json({ error: 'db' });
-      res.json(rows);
+      // Ensure reactions is valid JSON
+      const parsedRows = rows.map(r => ({
+        ...r,
+        reactions: r.reactions ? JSON.parse(r.reactions) : {}
+      }));
+      res.json(parsedRows);
     }
   );
 });
@@ -83,28 +114,79 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   socketsByUser.set(String(socket.userId), socket);
+
   socket.on('private_message', (msg) => {
-    const { to, content } = msg;
+    const { to, content, type = 'text', tempId } = msg;
+
+    // Reject invalid type or large content if needed
+    if (type !== 'text' && type !== 'image') return;
+    
+    // Size limit for base64 images (e.g. 5MB)
+    if (content.length > 5 * 1024 * 1024) return;
+
     const timestamp = Date.now();
-    db.run('INSERT INTO messages (from_id,to_id,content,timestamp) VALUES (?,?,?,?)', [
-      socket.userId,
-      to,
-      content,
-      timestamp,
-    ]);
+    
+    db.run(
+      'INSERT INTO messages (from_id,to_id,content,timestamp,type,reactions) VALUES (?,?,?,?,?,?)', 
+      [socket.userId, to, content, timestamp, type, '{}'],
+      function(err) {
+        if (err) return console.error(err);
+        
+        const messageId = this.lastID;
+        const out = {
+            id: messageId,
+            from_id: socket.userId,
+            to_id: to,
+            content,
+            timestamp,
+            type,
+            reactions: {}
+        };
 
-    const out = {
-      from_id: socket.userId,
-      to_id: to,
-      content,
-      timestamp,
-    };
+        // Emit to recipient (no tempId needed)
+        const recipientSocket = socketsByUser.get(String(to));
+        if (recipientSocket) {
+            recipientSocket.emit('private_message', out);
+        }
+        
+        // Emit back to sender with tempId to replace optimistic message
+        socket.emit('private_message_sent', { ...out, tempId });
+      }
+    );
+  });
 
-    // emit to recipient if online
-    const sock = socketsByUser.get(String(to));
-    if (sock) sock.emit('private_message', out);
-    // also emit back to sender to confirm
-    socket.emit('private_message', out);
+  socket.on('reaction', ({ msgId, emoji }) => {
+    if (!msgId || !emoji) return;
+    
+    db.get('SELECT * FROM messages WHERE id = ?', [msgId], (err, row) => {
+        if (err || !row) return;
+
+        let reactions = {};
+        try { reactions = JSON.parse(row.reactions || '{}'); } catch(e) {}
+        
+        // Toggle reaction or set it
+        if (reactions[socket.userId] === emoji) {
+            delete reactions[socket.userId];
+        } else {
+            reactions[socket.userId] = emoji;
+        }
+        
+        const jsonReactions = JSON.stringify(reactions);
+        
+        db.run('UPDATE messages SET reactions = ? WHERE id = ?', [jsonReactions, msgId], (errUpdate) => {
+            if (errUpdate) return;
+            
+            // Notify both parties involved in the message conversation
+            // We can infer sender/receiver from 'row'
+            const user1Socket = socketsByUser.get(String(row.from_id));
+            const user2Socket = socketsByUser.get(String(row.to_id));
+            
+            const eventData = { msgId, reactions };
+            
+            if (user1Socket) user1Socket.emit('reaction_update', { msgId, reactions });
+            if (user2Socket) user2Socket.emit('reaction_update', { msgId, reactions });
+        });
+    });
   });
 
   socket.on('disconnect', () => {

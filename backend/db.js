@@ -17,7 +17,17 @@ db.serialize(() => {
     to_id INTEGER NOT NULL,
     content TEXT NOT NULL,
     timestamp INTEGER NOT NULL
-  )`);
+  )`, (err) => {
+    if (!err) {
+      // Attempt to add new columns for existing databases
+      try {
+        db.run(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`, () => {});
+        db.run(`ALTER TABLE messages ADD COLUMN reactions TEXT DEFAULT '{}'`, () => {});
+      } catch (e) {
+        // Find a way to handle this gracefully if columns exist (SQLite throws error but we can ignore duplicate column error here)
+      }
+    }
+  });
 });
 
 module.exports = db;
