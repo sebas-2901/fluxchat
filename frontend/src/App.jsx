@@ -272,6 +272,19 @@ function App() {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('fluxchat_user');
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+    setUser(null);
+    setSelectedUser(null);
+    setMessages([]);
+    setView('login');
+    window.history.replaceState({ view: 'login' }, '', '/');
+  };
+
   const handleEmojiClick = ({ emoji }) => {
     setInputMsg(prev => prev + emoji);
     setShowEmojiPicker(false);
@@ -538,6 +551,14 @@ function App() {
                 >
                     {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : 'Guardar Cambios'}
                 </button>
+
+                <button 
+                    type="button"
+                    onClick={handleLogout}
+                    className="w-full py-3.5 bg-rose-500/10 text-rose-400 font-bold rounded-xl hover:bg-rose-500/20 transition-all transform active:scale-95 flex items-center justify-center gap-2"
+                >
+                    <i className="fa-solid fa-right-from-bracket"></i> Cerrar Sesión
+                </button>
             </form>
         </div>
     </main>
@@ -573,8 +594,7 @@ function App() {
                         </div>
                     </div>
                     <div className="flex gap-2">
-                        <button className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition"><i className="fa-solid fa-phone"></i></button>
-                        <button className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition"><i className="fa-solid fa-video"></i></button>
+                        {/* call and video buttons hidden */}
                     </div>
                 </header>
 
