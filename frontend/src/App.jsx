@@ -203,7 +203,10 @@ function App() {
         showAlert('success', '¡Cuenta creada correctamente! Bienvenido a FluxChat.');
         setTimeout(() => { closeAlert(); changeView('chat'); }, 2000);
       } else {
-        showAlert('error', data.error || 'Error al registrarse');
+        const msg = data.error === 'exists'
+          ? 'Este correo ya está registrado. Intenta iniciar sesión.'
+          : (data.error || 'Error al registrarse');
+        showAlert('error', msg);
       }
     } catch (err) {
       setLoading(false);
